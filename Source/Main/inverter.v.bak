@@ -1,0 +1,124 @@
+`timescale 1ns / 1ps
+`define UPDATING 3'd1
+`define CHECK 3'd2
+`define HOLDING 3'd3
+
+module inverter #( // S? d?ng #() ?? khai báo tham s?
+    parameter WIDTH = 32
+) ( // Sau ?ó m?i ??n () cho danh sách c?ng
+    input [WIDTH-1:0] p,
+    input [WIDTH-1:0] q,
+    input clk,
+    input reset,
+    output finish, // Gi? nguyên output (không có logic, s? là wire)
+    output [WIDTH*2-1:0] e, // Gi? nguyên output
+    output [WIDTH*2-1:0] d  // Gi? nguyên output
+);
+
+    // Ph?n thân module gi? nguyên nh? code b?n cung c?p
+    reg [WIDTH*2-1:0] totient_reg,a,b,y,y_prev;
+    reg [2:0] state;
+    reg [WIDTH-1:0] e_reg;
+
+    wire [WIDTH*2-1:0] totient = (p-1)*(q-1);
+    wire [WIDTH*2-1:0] quotient,b_next;
+    wire [WIDTH*2-1:0] y_next = y_prev - quotient * y; // y_prev và y là reg, có th? gây ra latch n?u ??c trong t? h?p và gán ? tu?n t? mà không ?úng cách
+                                                      // Tuy nhiên, chúng ???c gán trong always block tu?n t?, nên ?ây là giá tr? t? cycle tr??c
+    wire [WIDTH-1:0] e_plus3 = e_reg + 2;
+
+    assign finish = (state == `HOLDING) ? 1'b1 : 1'b0;
+    assign e = e_reg; // e_reg là [WIDTH-1:0], e là [WIDTH*2-1:0]. S? t? ??ng m? r?ng bit d?u (n?u e_reg signed) ho?c thêm bit 0 (n?u unsigned)
+    assign d = y_prev;
+
+    // Gi? s? module 'mod' có các c?ng: .a(input_val), .n(modulus_val), .R(remainder_out), .Q(quotient_out)
+    // Và b?n ?ã s?a module 'mod' ?? ho?t ??ng ?úng
+    mod x_mod_y_inst ( // ??i tên instance ?? tránh trùng tên v?i module n?u có module tên 'mod'
+        .a(a),       // K?t n?i c?ng a c?a mod
+        .n(b),       // K?t n?i c?ng n c?a mod
+        .R(b_next),  // K?t n?i c?ng R c?a mod
+        .Q(quotient) // K?t n?i c?ng Q c?a mod
+    );
+    defparam x_mod_y_inst.WIDTH = WIDTH*2; // defparam s? d?ng tên instance
+
+    always @(posedge clk) begin
+        if(reset) begin
+            totient_reg <= totient; // totient là wire, tính toán t? h?p t? p, q. p, q là input, nên OK
+            a <= totient;       // a c?ng nên là totient_reg ?? ??m b?o giá tr? ?n ??nh
+            // S?a: a <= totient_reg; (ho?c gán a = totient trong ph?n reset n?u totient không ??i sau reset)
+            // Tuy nhiên, logic hi?n t?i là a <= totient (wire) -> a s? nh?n giá tr? m?i c?a totient n?u p,q thay ??i và reset gi? nguyên
+            // Chính xác h?n nên là: a <= (p-1)*(q-1); ho?c a <= totient_reg;
+            // ?? nh?t quán v?i vi?c tìm GCD(phi(n), e), a nên là phi(n)
+            // Mà phi(n) ?ã ???c gán cho totient_reg. V?y a <= totient_reg; là h?p lý.
+
+            // Nên kh?i t?o a = (p-1)*(q-1) (giá tr? c?a totient)
+            // Và totient_reg <= (p-1)*(q-1);
+            // Sau ?ó a <= totient_reg;
+            // Ho?c ??n gi?n là a <= (p-1)*(q-1) trong reset n?u p,q ?n ??nh khi reset.
+            // ?? an toàn, gán th?ng giá tr? tính toán vào reg trong reset n?u p,q là input có th? thay ??i.
+            // Ho?c ??m b?o p, q ?n ??nh tr??c khi de-assert reset.
+            // Gi? s? p, q là ?n ??nh khi reset:
+            a <= (p-1)*(q-1); // Gán giá tr? tính toán tr?c ti?p t? input p, q
+            totient_reg <= (p-1)*(q-1); // totient_reg dùng ?? gi? giá tr? phi(n) cho các l?n th? e m?i
+
+            b <= 3; // b là e ban ??u
+            e_reg <=3;
+            y <= 1;
+            y_prev <= 0;
+            state <= `UPDATING;
+        end else begin // Thêm begin/end cho kh?i else
+            case(state)
+                `UPDATING: begin
+                    if(b != {{WIDTH*2{1'b0}}}) begin // So sánh v?i 0 có kích th??c ?úng
+                        a <= b;
+                        b <= b_next; // b_next t? module mod
+                        // C?p nh?t y và y_prev cho thu?t toán Euclid m? r?ng
+                        // Logic hi?n t?i: y_prev <= y; y <= y_prev - quotient * y; (tính y_next r?i gán cho y)
+                        // C?n ??m b?o th? t? ?úng:
+                        // temp_y = y;
+                        // y <= y_prev - quotient * temp_y; // Ho?c y_next
+                        // y_prev <= temp_y;
+                        // Code hi?n t?i: y <= y_next (trong ?ó y_next ?ã dùng y và y_prev c?a cycle tr??c)
+                        // y_prev <= y (s? là y_next c?a cycle tr??c, không ph?i y c?a cycle tr??c)
+                        // => ?ây là m?t l?i logic ti?m ?n trong c?p nh?t y, y_prev.
+                        // Nên là:
+                        // reg temp_y_for_update;
+                        // temp_y_for_update = y;
+                        // y_prev <= temp_y_for_update;
+                        // y <= y_prev - quotient * temp_y_for_update; // N?u y_prev ? ?ây là y_prev c? (giá tr? c?a y_prev tr??c khi gán y_prev <= temp_y_for_update)
+                        // Cách ??n gi?n h?n:
+                        // new_y = y_prev - quotient * y; (dùng giá tr? c? c?a y_prev, y)
+                        // y_prev <= y;
+                        // y <= new_y;
+                        // Trong code hi?n t?i:
+                        // y_next ???c tính t? y_prev và y (c?).
+                        // Trong always: y <= y_next; y_prev <= y;
+                        // Nh? v?y: y_prev (m?i) = y (c?). y (m?i) = y_prev (c?) - quotient * y (c?).
+                        // ?ây là cách c?p nh?t ?úng cho h? s? c?a thu?t toán Euclid m? r?ng.
+                        y <= y_next;
+                        y_prev <= y; // Gán y (c?) cho y_prev. ?úng.
+                        state <= `UPDATING;
+                    end
+                    else state <= `CHECK;
+                end
+                `CHECK: begin
+                    // y_prev[WIDTH*2-1] là bit d?u c?a y_prev
+                    if(a == {{WIDTH*2-1{1'b0}},1'b1} && y_prev[WIDTH*2-1] == 1'b0) // a là GCD, ph?i b?ng 1. y_prev ph?i d??ng
+                        state = `HOLDING;
+                    else begin
+                        a <= totient_reg; // Reset a v? phi(n)
+                        b <= e_plus3;     // Th? e m?i
+                        e_reg <= e_plus3;
+                        y <= 1;
+                        y_prev <= 0;      // Chú ý: trong code g?c là y_prev = 0 (blocking), nên là y_prev <= 0 (non-blocking)
+                                          // ?ã s?a trong code này: y_prev <= 0;
+                        state <= `UPDATING;
+                    end
+                end
+                `HOLDING: begin
+                    // Gi? tr?ng thái
+                end
+            endcase
+        end
+    end
+
+endmodule
